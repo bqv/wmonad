@@ -1,37 +1,46 @@
 {
   description = "WMonad flake";
 
-  inputs.nixpkgs.url = "github:nixos/nixpkgs/nixos-unstable";
-  inputs.master.follows = "nixpkgs";
-  inputs.large.follows = "nixpkgs";
-  inputs.nix.follows = "nix";
+  inputs.nixpkgs.follows = "rc/master";
+  inputs.nix.follows = "rc/nix";
+  inputs.rc = {
+    url = "github:bqv/nixrc";
+    inputs = { # Follows is still a bit tempramental
+      construct.inputs.nixpkgs.follows = "rc/large";
+      dwarffs.inputs.nixpkgs.follows = "rc/master";
+      guix.inputs.nixpkgs.follows = "rc/master";
+      home.inputs.nixpkgs.follows = "rc/master";
+      naersk.inputs.nixpkgs.follows = "rc/master";
+      nix.inputs.nixpkgs.follows = "rc/master";
+      wayland.inputs.nixpkgs.follows = "rc/small";
+      xontribs.inputs.nixpkgs.follows = "rc/master";
+    };
+  };
 
-  inputs.nixos.url = "github:bqv/nixrc/live";
+  outputs = { self, rc, ... }: {
 
-  outputs = { self, nixos, ... }: {
-
-    packages.x86_64-linux = rec {
-      inherit (nixos.packages.x86_64-linux.velox) swc;
-      wmonad = let
-        pkg = { haskellPackages, libinput }: haskellPackages.callPackage ./. {
-          inherit swc;
-          input = libinput;
-        };
-      in 
-        nixos.legacyPackages.x86_64-linux.callPackage pkg {};
+    packages.x86_64-linux = let
+      pkgs = rc.legacyPackages.x86_64-linux
+          // rc.packages.x86_64-linux;
+    in rec {
+      inherit (pkgs.velox) swc;
+      wmonad = pkgs.haskellPackages.callCabal2nix "wmonad" ./. {
+        inherit swc;
+        input = pkgs.libinput;
+      };
     };
 
     defaultPackage.x86_64-linux = self.packages.x86_64-linux.wmonad;
 
-    devShell.x86_64-linux = nixos.legacyPackages.x86_64-linux.mkShell {
+    devShell.x86_64-linux = rc.legacyPackages.x86_64-linux.mkShell {
       buildInputs = [
-        nixos.legacyPackages.x86_64-linux.wayland
-        nixos.legacyPackages.x86_64-linux.libinput
-        nixos.legacyPackages.x86_64-linux.libxkbcommon
-        nixos.packages.x86_64-linux.velox.swc
+        rc.legacyPackages.x86_64-linux.wayland
+        rc.legacyPackages.x86_64-linux.libinput
+        rc.legacyPackages.x86_64-linux.libxkbcommon
+        rc.packages.x86_64-linux.velox.swc
       ];
       nativeBuildInputs = [
-        nixos.legacyPackages.x86_64-linux.cabal2nix
+        rc.legacyPackages.x86_64-linux.cabal2nix
       ];
     };
 
