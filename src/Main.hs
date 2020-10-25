@@ -1,3 +1,4 @@
 import qualified WMonad
 
-main = WMonad.run
+main :: IO Int
+main = WMonad.run >> return 0

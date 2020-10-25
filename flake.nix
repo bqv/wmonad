@@ -28,11 +28,23 @@
         inherit swc;
         input = pkgs.libinput;
       };
+      ghci = pkgs.writeShellScriptBin "ghci" ''
+        export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:${pkgs.lib.makeLibraryPath [
+          rc.legacyPackages.x86_64-linux.wayland
+          rc.legacyPackages.x86_64-linux.libinput
+          rc.legacyPackages.x86_64-linux.libxkbcommon
+          rc.packages.x86_64-linux.velox.swc
+        ]}"
+        ${pkgs.haskellPackages.cabal-install}/bin/cabal repl $@
+      '';
     };
 
     defaultPackage.x86_64-linux = self.packages.x86_64-linux.wmonad;
 
     devShell.x86_64-linux = rc.legacyPackages.x86_64-linux.mkShell {
+      inputsFrom = [
+        self.packages.x86_64-linux.wmonad
+      ];
       buildInputs = [
         rc.legacyPackages.x86_64-linux.wayland
         rc.legacyPackages.x86_64-linux.libinput
@@ -40,6 +52,7 @@
         rc.packages.x86_64-linux.velox.swc
       ];
       nativeBuildInputs = [
+        self.packages.x86_64-linux.ghci
         rc.legacyPackages.x86_64-linux.cabal2nix
       ];
     };

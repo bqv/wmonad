@@ -16,8 +16,11 @@ executable wmonad
   build-depends:       base >=4 && <5
                      , bytestring
                      , containers
+                     , comonad
+                     , comonad-extras
                      , template-haskell
                      , inline-c
+                     , lens
                      , hint
   default-language:    Haskell2010
 
