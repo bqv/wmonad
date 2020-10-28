@@ -1,0 +1,12 @@
+diff -rN -u old-cpphs/Language/Preprocessor/Cpphs/Tokenise.hs new-cpphs/Language/Preprocessor/Cpphs/Tokenise.hs
+--- old-cpphs/Language/Preprocessor/Cpphs/Tokenise.hs	2018-05-08 16:57:53.934565562 +0200
++++ new-cpphs/Language/Preprocessor/Cpphs/Tokenise.hs	2018-05-08 16:57:53.934565562 +0200
+@@ -204,6 +204,8 @@
+     lexcpp LineComment w l ls (_:xs)      = lexcpp LineComment (' ':w) l ls xs
+     lexcpp (NestComment _) w l ls ('*':'/':xs)
+                                           = lexcpp Any [] (w*/*l) ls xs
++    lexcpp (NestComment _) w l ls xs@('\n':_)
++                                          = lexcpp Any [] (w*/*l) ls xs
+     lexcpp (NestComment n) w l ls (x:xs)  = lexcpp (NestComment n) (white x:w) l
+                                                                         ls xs
+     lexcpp mode w l ((p,l'):ls) []        = cpp mode next w l p ls ('\n':l')

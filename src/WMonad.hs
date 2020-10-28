@@ -6,14 +6,17 @@ module WMonad (
   run
 ) where
 
+import           Control.Concurrent.STM
+import           Control.Concurrent.STM.TChan
 import           Control.Comonad.Store
 import           Control.Comonad.Store.Zipper
 import           Control.Comonad.Store.Zipper.Circular
+import           Control.Monad.State
 import           Data.ByteString
 import           Data.Functor
 import           Data.IntMap
 import           Data.IORef
-import           Data.Lens
+import           Control.Lens
 import qualified Data.Map as Map
 import           Data.Word
 import           Foreign.C.Types
@@ -26,31 +29,19 @@ import qualified Language.C.Inline as C
 import qualified Language.C.Inline.Context as C
 import qualified Language.C.Inline.Unsafe as CU
 import qualified Language.C.Types as C
-import           WMonad.Internal
-
-C.context wmCtx
-
-{- Includes -}
-C.include "<math.h>"
-C.include "<stdio.h>"
-
-C.include "<stdlib.h>"
-C.include "<swc.h>"
-C.include "<unistd.h>"
-C.include "<wayland-server.h>"
-C.include "<xkbcommon/xkbcommon.h>"
+import qualified SWC
 
 {- Types -}
-newtype WM a = State Core a
+newtype ZipperMap a = Zipper IntMap (Maybe a)
 
 data Core = Core (Ptr WlEventLoop) Display
 --  static struct wl_event_loop *event_loop;
 
-data Display = Display (Ptr WlDisplay) (Zipper IntMap (Maybe Screen))
+data Display = Display (Ptr WlDisplay) (ZipperMap Screen)
 --  static void *active_screen;
 --  static struct wl_display *display;
 
-data Screen = Screen (Ptr SwcScreen) (Zipper IntMap (Maybe Window))
+data Screen = Screen (Ptr SwcScreen) (ZipperMap Window)
 --  static void *focused_window;
 --void {
 --  struct swc_screen *swc;
@@ -66,9 +57,9 @@ data Window = Window (Ptr SwcWindow)
 --};
 
 {- Implementation -}
-newScreen :: Ptr SwcScreenHandler -> NewScreenCallback
+newScreen :: (MonadState Core m) => Ptr SwcScreenHandler -> m NewScreenCallback
 newScreen sh = \p_swc -> do
-  screen <- newMVar $ Screen p_swc mempty
+  let screen = Screen p_swc mempty
   p_screen <- castStablePtrToPtr <$> newStablePtr screen
   [C.block| void {
     swc_screen_set_handler($(struct swc_screen *p_swc), $(struct swc_screen_handler *sh), $(void *p_screen));
@@ -207,9 +198,9 @@ focus p_window = [C.block| void {
      focused_window = $(void *p_window);
 } |]
 
-spawn :: SwcBindingCallback
+spawn :: SWC.BindingCallback
 spawn p_data time value state
-  | (toEnum.fromEnum) state == WlKeyboardKeyStatePressed = do
+  | (toEnum.fromEnum) state == WL.KeyboardKeyStatePressed = do
     [C.block| void {
       char *const *command = $(void *p_data);
 
@@ -220,58 +211,20 @@ spawn p_data time value state
     } |]
   | otherwise = return ()
 
-quit :: Ptr WlDisplay -> SwcBindingCallback
+quit :: Ptr WL.Display -> SWC.BindingCallback
 quit display p_data time value state
-  | (toEnum.fromEnum) state == WlKeyboardKeyStatePressed = do
+  | (toEnum.fromEnum) state == WL.KeyboardKeyStatePressed = do
     [C.block| void {
       wl_display_terminate($(struct wl_display *display));
     } |]
   | otherwise = return ()
 
-mkStablePtr :: a -> IO (Ptr a)
-mkStablePtr val = newStablePtr val <&> (castPtr . castStablePtrToPtr)
-
 run :: IO ()
 run = do
-  hScreen <- screenHandler usableGeometryChanged screenEntered >>= mkStablePtr
-  let fnNewScreen = newScreen hScreen
-  hWindow <- windowHandler windowDestroy windowEntered >>= mkStablePtr
-  let fnNewWindow = newWindow hWindow
-  p_manager <- manager fnNewScreen fnNewWindow >>= mkStablePtr
+  writer <- newBroadcastTChanIO
+  reader <- atomically $ dupTChan writer
 
-  display <- newDisplay
-  p_display <- readIORef display
-  let cbQuit = quit p_display
-
-  [C.block| void {
-    const char *socket = wl_display_add_socket_auto($(struct wl_display *p_display));
-    if (!socket)
-      return EXIT_FAILURE;
-    setenv("WAYLAND_DISPLAY", socket, 1);
-  } |]
-
-  [C.block| void {
-    if (!swc_initialize($(struct wl_display *p_display), NULL, $(struct swc_manager *p_manager)))
-      return EXIT_FAILURE;
-
-    swc_add_binding(SWC_BINDING_KEY, SWC_MOD_LOGO, XKB_KEY_Return,
-                    $fun:(void (*spawn)(void *, uint32_t, uint32_t, uint32_t)), terminal_command);
-    swc_add_binding(SWC_BINDING_KEY, SWC_MOD_LOGO, XKB_KEY_r,
-                    $fun:(void (*spawn)(void *, uint32_t, uint32_t, uint32_t)), dmenu_command);
-    swc_add_binding(SWC_BINDING_KEY, SWC_MOD_LOGO, XKB_KEY_q,
-                    $fun:(void (*cbQuit)(void *, uint32_t, uint32_t, uint32_t)), NULL);
-
-    event_loop = wl_display_get_event_loop($(struct wl_display *p_display));
-    wl_display_run($(struct wl_display *p_display));
-    wl_display_destroy($(struct wl_display *p_display));
-  } |]
-  where
-    ensurePtr :: String -> Ptr a -> IO (Ptr a)
-    ensurePtr errMsg p_val = do
-      let ptr = castPtr p_val
-      notNull <- [C.exp| bool { !$(void *ptr) } |]
-      if toBool notNull then return p_val else fail errMsg
-    newDisplay :: IO (IORef (Ptr WlDisplay))
-    newDisplay = [C.exp| struct wl_display * {
-      wl_display_create();
-    } |] >>= ensurePtr "error: wl_display_create" >>= newIORef
+  forkOS $ SWC.start writer
+--registerBinding BindingKey ModifierLogo keysym_Return spawn $ Just terminal_command
+--registerBinding BindingKey ModifierLogo keysym_r spawn $ Just dmenu_command
+--registerBinding BindingKey ModifierLogo keysym_q (quit display) $ Nothing

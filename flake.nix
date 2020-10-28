@@ -1,6 +1,7 @@
 {
   description = "WMonad flake";
 
+  inputs.xkbcommon = { url = "github:ongy/haskell-xkbcommon"; flake = false; };
   inputs.nixpkgs.follows = "rc/master";
   inputs.nix.follows = "rc/nix";
   inputs.rc = {
@@ -17,17 +18,25 @@
     };
   };
 
-  outputs = { self, rc, ... }: {
+  outputs = inputs@{ self, rc, ... }: {
 
     packages.x86_64-linux = let
       pkgs = rc.legacyPackages.x86_64-linux
           // rc.packages.x86_64-linux;
+      haskellPkgs = pkgs.haskellPackages.override {
+        overrides = _: super: with pkgs.haskell.lib; {
+          xkbcommon = markUnbroken
+            (overrideSrc super.xkbcommon { src = inputs.xkbcommon; });
+          cpphs = appendPatch super.cpphs ./cpphs.patch;
+        };
+      };
     in rec {
       inherit (pkgs.velox) swc;
-      wmonad = pkgs.haskellPackages.callCabal2nix "wmonad" ./. {
+      wmonad = haskellPkgs.callCabal2nix "wmonad" ./. {
         inherit swc;
         input = pkgs.libinput;
       };
+      ghc = pkgs.ghc.withPackages (_: wmonad.propagatedBuildInputs);
       ghci = pkgs.writeShellScriptBin "ghci" ''
         export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:${pkgs.lib.makeLibraryPath [
           rc.legacyPackages.x86_64-linux.wayland
@@ -52,6 +61,7 @@
         rc.packages.x86_64-linux.velox.swc
       ];
       nativeBuildInputs = [
+        self.packages.x86_64-linux.ghc
         self.packages.x86_64-linux.ghci
         rc.legacyPackages.x86_64-linux.cabal2nix
       ];
