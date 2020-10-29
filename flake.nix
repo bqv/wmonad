@@ -28,6 +28,8 @@
           xkbcommon = markUnbroken
             (overrideSrc super.xkbcommon { src = inputs.xkbcommon; });
           cpphs = appendPatch super.cpphs ./cpphs.patch;
+          co-log = markUnbroken super.co-log;
+          typerep-map = markUnbroken super.typerep-map;
         };
       };
     in rec {
@@ -37,7 +39,7 @@
         input = pkgs.libinput;
       };
       ghc = pkgs.ghc.withPackages (_: wmonad.propagatedBuildInputs);
-      ghci = pkgs.writeShellScriptBin "ghci" ''
+      cabal-repl = pkgs.writeShellScriptBin "cabal-repl" ''
         export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:${pkgs.lib.makeLibraryPath [
           rc.legacyPackages.x86_64-linux.wayland
           rc.legacyPackages.x86_64-linux.libinput
@@ -62,7 +64,7 @@
       ];
       nativeBuildInputs = [
         self.packages.x86_64-linux.ghc
-        self.packages.x86_64-linux.ghci
+        self.packages.x86_64-linux.cabal-repl
         rc.legacyPackages.x86_64-linux.cabal2nix
       ];
     };

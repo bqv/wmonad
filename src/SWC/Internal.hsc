@@ -28,6 +28,7 @@ ctx = C.baseCtx <> C.fptrCtx <> C.funCtx <> C.vecCtx <> C.bsCtx <> libCtx
 swcTypesTable :: Map.Map C.TypeSpecifier TH.TypeQ
 swcTypesTable = Map.fromList [
 --(C.TypeName "screen", [t| Screen |]) ,
+  (C.Struct "swc_rectangle", [t| Rectangle |]) ,
   (C.Struct "swc_screen", [t| Screen |]) ,
   (C.Struct "swc_window", [t| Window |]) ,
   (C.Struct "swc_screen_handler", [t| ScreenHandler |]) ,

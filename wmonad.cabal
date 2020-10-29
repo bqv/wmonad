@@ -18,22 +18,24 @@ executable wmonad
                      , Control.Comonad.Store.Zipper.Circular
   build-depends:       base >=4 && <5
                      , bytestring
-                     , containers
-                     , Unique
-                     , mtl
-                     , stm
-                     , lens
+                     , co-log
                      , comonad
                      , comonad-extras
-                     , unix
-                     , time
-                     , template-haskell
-                     , inline-c
-                     , xkbcommon
+                     , containers
                      , hint
+                     , inline-c
+                     , lens
+                     , mmorph
+                     , stm
+                     , template-haskell
+                     , time
+                     , transformers
+                     , Unique
+                     , unix
+                     , xkbcommon
   default-language:    Haskell2010
 
   extra-libraries:     wayland-server input xkbcommon swc
 --  include-dirs:        libswc
   cc-options:          -Wall
-  ghc-options:         -Wall
+  ghc-options:         -Wall -threaded

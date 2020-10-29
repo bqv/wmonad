@@ -2,46 +2,52 @@
 {-# LANGUAGE QuasiQuotes #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LiberalTypeSynonyms #-}
+{-# LANGUAGE FlexibleContexts #-}
 module WMonad (
   run
 ) where
 
+import           Colog (Message, WithLog, cmap, fmtMessage, logDebug, logInfo, logTextStdout, logWarning, usingLoggerT)
+import           Control.Concurrent
 import           Control.Concurrent.STM
 import           Control.Concurrent.STM.TChan
 import           Control.Comonad.Store
 import           Control.Comonad.Store.Zipper
 import           Control.Comonad.Store.Zipper.Circular
-import           Control.Monad.State
+import           Control.Monad
+import           Control.Monad.Trans.Reader
+import           Control.Monad.Trans.State
+import           Control.Monad.Trans.Writer
+import           Control.Monad.Morph
 import           Data.ByteString
 import           Data.Functor
 import           Data.IntMap
 import           Data.IORef
 import           Control.Lens
-import qualified Data.Map as Map
+import qualified Data.Map as M
 import           Data.Word
 import           Foreign.C.Types
-import           Foreign.ForeignPtr
 import           Foreign.Marshal.Utils
 import           Foreign.Ptr
-import           Foreign.StablePtr
-import           Foreign.Storable
 import qualified Language.C.Inline as C
 import qualified Language.C.Inline.Context as C
 import qualified Language.C.Inline.Unsafe as CU
 import qualified Language.C.Types as C
 import qualified SWC
+import qualified SWC.Wayland as WL
+import qualified Text.XkbCommon as XKB
 
 {- Types -}
-newtype ZipperMap a = Zipper IntMap (Maybe a)
+type ZipperMap a = Zipper (IntMap) (Maybe a)
 
-data Core = Core (Ptr WlEventLoop) Display
+data Core = Core (Ptr WL.EventLoop) Display
 --  static struct wl_event_loop *event_loop;
 
-data Display = Display (Ptr WlDisplay) (ZipperMap Screen)
+data Display = Display (Ptr WL.Display) (ZipperMap Screen)
 --  static void *active_screen;
 --  static struct wl_display *display;
 
-data Screen = Screen (Ptr SwcScreen) (ZipperMap Window)
+data Screen = Screen (Ptr SWC.Screen) (ZipperMap Window)
 --  static void *focused_window;
 --void {
 --  struct swc_screen *swc;
@@ -49,7 +55,7 @@ data Screen = Screen (Ptr SwcScreen) (ZipperMap Window)
 --  unsigned num_windows;
 --};
 
-data Window = Window (Ptr SwcWindow)
+data Window = Window (Ptr SWC.Window)
 --void {
 --  struct swc_window *swc;
 --  void *screen;
@@ -57,7 +63,8 @@ data Window = Window (Ptr SwcWindow)
 --};
 
 {- Implementation -}
-newScreen :: (MonadState Core m) => Ptr SwcScreenHandler -> m NewScreenCallback
+{-
+newScreen :: (MonadState Core m) => Ptr SWC.ScreenHandler -> m SWC.NewScreenCallback
 newScreen sh = \p_swc -> do
   let screen = Screen p_swc mempty
   p_screen <- castStablePtrToPtr <$> newStablePtr screen
@@ -66,7 +73,7 @@ newScreen sh = \p_swc -> do
     active_screen = $(void *p_screen);
   } |]
 
-newWindow :: Ptr SwcWindowHandler -> NewWindowCallback
+newWindow :: Ptr SWC.WindowHandler -> SWC.NewWindowCallback
 newWindow wh = \p_swc -> do
   window <- newMVar $ Window p_swc
   p_window <- castStablePtrToPtr <$> newStablePtr window
@@ -77,10 +84,7 @@ newWindow wh = \p_swc -> do
     focus($(void *p_window));
   } |]
 
-manager :: NewScreenCallback -> NewWindowCallback -> IO SwcManager
-manager ns nw = SwcManager <$> $(C.mkFunPtr [t| NewScreenCallback |]) ns <*> $(C.mkFunPtr [t| NewWindowCallback |]) nw
-
-usableGeometryChanged :: SwcDataCallback
+usableGeometryChanged :: SWC.DataCallback
 usableGeometryChanged = \p_data -> [C.block| void {
     void *screen = $(void *p_data);
 
@@ -90,17 +94,14 @@ usableGeometryChanged = \p_data -> [C.block| void {
     arrange(screen);
 } |]
 
-screenEntered :: SwcDataCallback
+screenEntered :: SWC.DataCallback
 screenEntered = \p_data -> [C.block| void {
     void *screen = $(void *p_data);
 
     active_screen = screen;
 } |]
 
-screenHandler :: SwcDataCallback -> SwcDataCallback -> IO SwcScreenHandler
-screenHandler ugc se = SwcScreenHandler <$> $(C.mkFunPtr [t| SwcDataCallback |]) ugc <*> $(C.mkFunPtr [t| SwcDataCallback |]) se
-
-windowDestroy :: SwcDataCallback
+windowDestroy :: SWC.DataCallback
 windowDestroy = \p_data -> [C.block| void {
     void *window = $(void *p_data), *next_focus;
 
@@ -122,15 +123,12 @@ windowDestroy = \p_data -> [C.block| void {
     free(window);
 } |]
 
-windowEntered :: SwcDataCallback
+windowEntered :: SWC.DataCallback
 windowEntered = \p_data -> [C.block| void {
     void *window = $(void *p_data);
 
     focus(window);
 } |]
-
-windowHandler :: SwcDataCallback -> SwcDataCallback -> IO SwcWindowHandler
-windowHandler wd we = SwcWindowHandler <$> $(C.mkFunPtr [t| SwcDataCallback |]) wd <*> $(C.mkFunPtr [t| SwcDataCallback |]) we
 
 arrange :: Ptr Screen -> IO ()
 arrange p_screen = [C.block| void {
@@ -209,22 +207,39 @@ spawn p_data time value state
         exit(EXIT_FAILURE);
       }
     } |]
-  | otherwise = return ()
+  | otherwise = pure ()
 
 quit :: Ptr WL.Display -> SWC.BindingCallback
 quit display p_data time value state
   | (toEnum.fromEnum) state == WL.KeyboardKeyStatePressed = do
-    [C.block| void {
-      wl_display_terminate($(struct wl_display *display));
-    } |]
-  | otherwise = return ()
+    SWC.terminate
+  | otherwise = pure ()
+-}
+
+--type WM = ExceptT String (ReaderT Bindings (StateT Core IO))
+
+bindings :: (SWC.MonadSwc cb, SWC.MonadWl cb) => Writer (M.Map SWC.Binding (cb ())) ()
+bindings = do
+--tell ((SWC.Binding SWC.BindingKey SWC.ModifierLogo XKB.keysym_Return), (spawn, Just "st-wl"))
+--tell ((SWC.Binding SWC.BindingKey SWC.ModifierLogo XKB.keysym_r), (spawn, Just "dmenu_run-wl"))
+--tell ((SWC.Binding SWC.BindingKey SWC.ModifierLogo XKB.keysym_q), (quit, Nothing))
+  pure ()
+
+--loopHandle :: STM SWC.CallbackEvent -> LoggerT [String] IO ()
+loopHandle :: STM SWC.CallbackEvent -> IO ()
+loopHandle readEvent = do
+  event <- atomically readEvent
+  print event
+  where
+    handle = undefined
 
 run :: IO ()
 run = do
-  writer <- newBroadcastTChanIO
-  reader <- atomically $ dupTChan writer
+  tcOut <- newBroadcastTChanIO
+  tcIn <- atomically $ dupTChan tcOut
 
-  forkOS $ SWC.start writer
---registerBinding BindingKey ModifierLogo keysym_Return spawn $ Just terminal_command
---registerBinding BindingKey ModifierLogo keysym_r spawn $ Just dmenu_command
---registerBinding BindingKey ModifierLogo keysym_q (quit display) $ Nothing
+  let bindTable = execWriter bindings :: M.Map SWC.Binding (IO ())
+
+  forkOS . SWC.start tcOut $ M.keys bindTable
+
+  forever . loopHandle $ readTChan tcIn
