@@ -19,14 +19,22 @@ executable wmonad
   build-depends:       base >=4 && <5
                      , bytestring
                      , co-log
+                     , co-log-core
+                     , co-log-polysemy
+                     , co-log-polysemy-formatting
                      , comonad
                      , comonad-extras
                      , containers
+                     , formatting
                      , hint
                      , inline-c
                      , lens
                      , mmorph
+                     , polysemy
+                     , polysemy-plugin
+                     , polysemy-zoo
                      , stm
+                     , text
                      , template-haskell
                      , time
                      , transformers
@@ -36,6 +44,16 @@ executable wmonad
   default-language:    Haskell2010
 
   extra-libraries:     wayland-server input xkbcommon swc
---  include-dirs:        libswc
-  cc-options:          -Wall
-  ghc-options:         -Wall -threaded
+  cc-options:          -O2 -Wall
+  ghc-options:         -O2 -Wall -g -threaded -flate-specialise -fspecialise-aggressively -fplugin=Polysemy.Plugin
+  default-extensions:
+   -- DataKinds
+   -- FlexibleContexts
+   -- GADTs
+   -- LambdaCase
+   -- PolyKinds
+   -- RankNTypes
+   -- ScopedTypeVariables
+   -- TypeApplications
+   -- TypeOperators
+   -- TypeFamilies

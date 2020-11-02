@@ -36,6 +36,8 @@ swcTypesTable = Map.fromList [
   (C.Struct "swc_manager", [t| Manager |]) ,
   (C.Struct "libinput_device", [t| InputDevice |]) ,
   (C.Struct "wl_display", [t| WL.Display |]) ,
+  (C.Struct "wl_event_loop_signal_func", [t| WL.SignalFunc |]) ,
+  (C.Struct "wl_event_source", [t| WL.EventSource |]) ,
   (C.Struct "wl_event_loop", [t| WL.EventLoop |]) ]
 
 {- Types -}
@@ -55,10 +57,10 @@ data Rectangle = Rectangle {
   posY :: Int,
   sizeW :: Word,
   sizeH :: Word
-}
+} deriving (Eq, Show)
 
 instance Storable Rectangle where
-  sizeOf (Rectangle _ _ _ _)      = #{size struct swc_rectangle}
+  sizeOf _                        = #{size struct swc_rectangle}
   alignment (Rectangle _ _ _ _)   = #{alignment struct swc_rectangle}
   peek p                              = do
     x <- #{peek struct swc_rectangle, x} p
@@ -77,10 +79,10 @@ data ScreenHandler = ScreenHandler {
   fnGeometryChanged :: FunPtr DataCallback,
   fnUsableGeometryChanged :: FunPtr DataCallback,
   fnScreenEntered :: FunPtr DataCallback
-}
+} deriving (Show)
 
 instance Storable ScreenHandler where
-  sizeOf (ScreenHandler _ _ _ _)      = #{size struct swc_screen_handler}
+  sizeOf _                            = #{size struct swc_screen_handler}
   alignment (ScreenHandler _ _ _ _)   = #{alignment struct swc_screen_handler}
   peek p                              = do
     sd <- #{peek struct swc_screen_handler, destroy} p
@@ -97,10 +99,10 @@ instance Storable ScreenHandler where
 data Screen = Screen {
   screenGeometry :: Rectangle,
   screenUsableGeometry :: Rectangle
-}
+} deriving (Show)
 
 instance Storable Screen where
-  sizeOf (Screen _ _)    = #{size struct swc_screen}
+  sizeOf _               = #{size struct swc_screen}
   alignment (Screen _ _) = #{alignment struct swc_screen}
   peek p                 = do
     g <- #{peek struct swc_screen, geometry} p
@@ -118,10 +120,10 @@ data WindowHandler = WindowHandler {
   fnWindowEntered :: FunPtr DataCallback,
   fnWindowMove :: FunPtr DataCallback,
   fnWindowResize :: FunPtr DataCallback
-}
+} deriving (Show)
 
 instance Storable WindowHandler where
-  sizeOf (WindowHandler _ _ _ _ _ _ _)         = #{size struct swc_window_handler}
+  sizeOf _                                     = #{size struct swc_window_handler}
   alignment (WindowHandler _ _ _ _ _ _ _)      = #{alignment struct swc_window_handler}
   peek p                                       = do
     wd <- #{peek struct swc_window_handler, destroy} p
@@ -144,11 +146,11 @@ instance Storable WindowHandler where
 data Window = Window {
   windowTitle :: Ptr CChar,
   windowAppId :: Ptr CChar,
-  windowParent :: Window
-}
+  windowParent :: Ptr Window
+} deriving (Show)
 
 instance Storable Window where
-  sizeOf (Window _ _ _)    = #{size struct swc_window}
+  sizeOf _                 = #{size struct swc_window}
   alignment (Window _ _ _) = #{alignment struct swc_window}
   peek p                   = do
     t <- #{peek struct swc_window, title} p
@@ -166,10 +168,10 @@ data Manager = Manager {
   fnNewDevice :: FunPtr NewDeviceCallback,
   fnActivate :: FunPtr SessionCallback,
   fnDeactivate :: FunPtr SessionCallback
-}
+} deriving (Show)
 
 instance Storable Manager where
-  sizeOf (Manager _ _ _ _ _)    = #{size struct swc_manager}
+  sizeOf _                      = #{size struct swc_manager}
   alignment (Manager _ _ _ _ _) = #{alignment struct swc_manager}
   peek p                        = do
     ns <- #{peek struct swc_manager, new_screen} p

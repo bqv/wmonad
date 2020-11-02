@@ -3,29 +3,43 @@
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE LiberalTypeSynonyms #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE TypeApplications #-}
+{-# LANGUAGE GADTs #-}
+{-# LANGUAGE DataKinds #-}
+{-# LANGUAGE NamedFieldPuns #-}
+{-# LANGUAGE RankNTypes #-}
 module WMonad (
-  run
+  runCompositor
 ) where
 
-import           Colog (Message, WithLog, cmap, fmtMessage, logDebug, logInfo, logTextStdout, logWarning, usingLoggerT)
+import           Prelude hiding (log)
+import           Colog.Polysemy.Formatting
 import           Control.Concurrent
 import           Control.Concurrent.STM
 import           Control.Concurrent.STM.TChan
 import           Control.Comonad.Store
 import           Control.Comonad.Store.Zipper
 import           Control.Comonad.Store.Zipper.Circular
+import           Control.Exception
 import           Control.Monad
 import           Control.Monad.Trans.Reader
 import           Control.Monad.Trans.State
 import           Control.Monad.Trans.Writer
-import           Control.Monad.Morph
-import           Data.ByteString
+import qualified Control.Monad.Morph as MM
+import qualified Data.ByteString as BS
+import           Data.Either
+import           Data.Function
 import           Data.Functor
-import           Data.IntMap
+import qualified Data.IntMap as IM
 import           Data.IORef
+import           Data.String
+import qualified Data.Text as T
+import           Data.Time.Clock
 import           Control.Lens
 import qualified Data.Map as M
 import           Data.Word
+import           Formatting
+import           Formatting.Formatters
 import           Foreign.C.Types
 import           Foreign.Marshal.Utils
 import           Foreign.Ptr
@@ -33,34 +47,34 @@ import qualified Language.C.Inline as C
 import qualified Language.C.Inline.Context as C
 import qualified Language.C.Inline.Unsafe as CU
 import qualified Language.C.Types as C
+import qualified Polysemy as P
+import qualified Polysemy.Writer as P
+import qualified Polysemy.Reader as P
+import qualified Polysemy.Input as P
+import qualified Polysemy.Embed as P
+import qualified Polysemy.Final as P
+import qualified Polysemy.Error as P
+import qualified Polysemy.State as P
 import qualified SWC
 import qualified SWC.Wayland as WL
 import qualified Text.XkbCommon as XKB
+import qualified Text.XkbCommon.KeysymList as XKB
 
 {- Types -}
-type ZipperMap a = Zipper (IntMap) (Maybe a)
+type ZipperMap a = Maybe (Zipper (IM.IntMap) (Maybe a))
 
-data Core = Core (Ptr WL.EventLoop) Display
---  static struct wl_event_loop *event_loop;
+data Core = Core { _eventLoop :: Ptr WL.EventLoop, _display :: Display, _ffiThread :: ThreadId }
 
-data Display = Display (Ptr WL.Display) (ZipperMap Screen)
---  static void *active_screen;
---  static struct wl_display *display;
+data Display = Display { _wlDisplay :: Ptr WL.Display, _screens :: ZipperMap Screen }
 
-data Screen = Screen (Ptr SWC.Screen) (ZipperMap Window)
---  static void *focused_window;
---void {
---  struct swc_screen *swc;
---  struct wl_list windows;
---  unsigned num_windows;
---};
+data Screen = Screen { _swcScreen :: Ptr SWC.Screen, _windows :: ZipperMap Window }
 
-data Window = Window (Ptr SWC.Window)
---void {
---  struct swc_window *swc;
---  void *screen;
---  struct wl_list link;
---};
+data Window = Window { _swcWindow :: Ptr SWC.Window }
+
+$(makeLenses ''Core)
+$(makeLenses ''Display)
+$(makeLenses ''Screen)
+$(makeLenses ''Window)
 
 {- Implementation -}
 {-
@@ -208,13 +222,14 @@ spawn p_data time value state
       }
     } |]
   | otherwise = pure ()
-
-quit :: Ptr WL.Display -> SWC.BindingCallback
-quit display p_data time value state
-  | (toEnum.fromEnum) state == WL.KeyboardKeyStatePressed = do
-    SWC.terminate
-  | otherwise = pure ()
 -}
+
+handleInput :: (WithLog r, P.Members '[P.Reader Core, P.Embed IO] r)
+            => SWC.Binding -> UTCTime -> Word32 -> WL.KeyboardKeyState -> P.Sem r ()
+handleInput (SWC.Binding SWC.BindingKey SWC.ModifierLogo keysym_q) time keyValue keyState
+  | keyState == WL.KeyboardKeyStatePressed = do
+      askWlDisplay >>= void . spawnFFI . SWC.terminate
+handleInput _ _ _ _ = pure ()
 
 --type WM = ExceptT String (ReaderT Bindings (StateT Core IO))
 
@@ -225,21 +240,72 @@ bindings = do
 --tell ((SWC.Binding SWC.BindingKey SWC.ModifierLogo XKB.keysym_q), (quit, Nothing))
   pure ()
 
---loopHandle :: STM SWC.CallbackEvent -> LoggerT [String] IO ()
-loopHandle :: STM SWC.CallbackEvent -> IO ()
-loopHandle readEvent = do
-  event <- atomically readEvent
-  print event
+spawnFFI :: (P.Member (P.Embed IO) r) => IO a -> P.Sem r ThreadId
+spawnFFI = P.embed . forkOS . void
+
+loopDispatch :: (WithLog r, P.Members '[P.Embed IO, P.Reader Core, P.Input SWC.CallbackEvent] r) => P.Sem r ()
+loopDispatch = do
+  event <- P.input
+  logDebug ("Event: " % shown) (event)
+  case event of
+    SWC.Catastrophe { SWC.exception } -> do
+      logError ("Error: " % string) $ displayException exception
+      logDebug "Exiting due to previous error"
+      askWlDisplay >>= void . spawnFFI . SWC.terminate
+    SWC.Ready _ _ -> undefined
+    SWC.InputEvent { SWC.binding, SWC.time, SWC.keyValue, SWC.keyState } -> do
+      handleInput binding time keyValue keyState >> loopDispatch
+    _ -> loopDispatch -- undefined
+
+askWlDisplay :: (P.Member (P.Reader Core) r) => P.Sem r (Ptr WL.Display)
+askWlDisplay = P.asks . view $ display . wlDisplay
+
+getWlDisplay :: (P.Member (P.State Core) r) => P.Sem r (Ptr WL.Display)
+getWlDisplay = P.gets . view $ display . wlDisplay
+
+waitReady :: (WithLog r, P.Members '[P.Writer [SWC.CallbackEvent], P.Input SWC.CallbackEvent, P.Reader ThreadId, P.Error SWC.FFIException] r)
+          => P.Sem r Core -> P.Sem r Core
+waitReady next = do
+  event <- P.input
+  logDebug ("Init: " % shown) (event)
+  case event of
+    SWC.Catastrophe { SWC.exception } -> do
+      logError ("Error: " % string) $ displayException exception
+      logDebug "Startup failed due to previous error"
+      P.throw exception
+    SWC.Ready { SWC.display, SWC.eventLoop } -> P.ask <&> \tid -> Core {
+      _eventLoop = eventLoop,
+      _display = Display display $ zipper IM.empty,
+      _ffiThread = tid
+    }
+    _ -> P.tell [event] >> next
+
+runCompositor :: (WithLog r, P.Members '[P.Embed IO] r) => P.Sem r ()
+runCompositor = do
+  init
+
+  (tid, chan) <- P.embed @IO $ do
+    tcOut <- newBroadcastTChanIO
+    tcIn <- atomically $ dupTChan tcOut
+
+    let bindTable = execWriter bindings :: M.Map SWC.Binding (IO ())
+
+    controlThread <- forkOS . SWC.start tcOut $ M.keys bindTable
+    pure (controlThread, tcIn)
+
+  let stmToIO = P.runEmbedded @STM @IO atomically
+  let withEventStream = P.runInputSem (P.embed $ readTChan chan)
+
+  stmToIO . withEventStream $ do
+    P.runError . flip (P.catch @SWC.FFIException) (const . forever $ P.input) $ do
+      (events, core) <- P.runWriter . P.runReader tid $ fix waitReady
+      mapM_ (P.embed . unGetTChan chan) $ reverse events
+      P.runReader core $ loopDispatch
+    forever $ P.input
   where
-    handle = undefined
-
-run :: IO ()
-run = do
-  tcOut <- newBroadcastTChanIO
-  tcIn <- atomically $ dupTChan tcOut
-
-  let bindTable = execWriter bindings :: M.Map SWC.Binding (IO ())
-
-  forkOS . SWC.start tcOut $ M.keys bindTable
-
-  forever . loopHandle $ readTChan tcIn
+    init :: (WithLog r, P.Members '[P.Embed IO] r) => P.Sem r ()
+    init = do
+      logDebug   "_|          _|  _|      _|                                      _|"
+      logInfo    "_|    _|    _|  _|_|  _|_|    _|_|    _|_|_|      _|_|_|    _|_|_|"
+      logWarning "  _|  _|  _|    _|  _|  _|  _|    _|  _|    _|  _|    _|  _|    _|"
+      logError   "    _|  _|      _|      _|    _|_|    _|    _|    _|_|_|    _|_|_|"

@@ -8,6 +8,7 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE DefaultSignatures #-}
 {-# LANGUAGE GADTs #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 module SWC (
   Screen(..),
   Window(..),
@@ -19,21 +20,27 @@ module SWC (
   MonadWl(..),
   MonadSwc(..),
   FFIException(..),
-  SwcException(..),
   start
 ) where
 
+import           Colog
+import           Colog.Monad
+import           Colog.Core.IO
+import           Control.Concurrent
 import           Control.Concurrent.STM
 import           Control.Exception
 import           Control.Monad
 import           Control.Monad.Trans.Class
 import           Control.Monad.Trans.State
-import           Data.ByteString as BS
+import           Control.Monad.Trans.Writer
+import           Data.ByteString.Char8 as BS
 import           Data.Foldable
 import           Data.Int
+import           Data.List as L
 import           Data.List.Unique
 import           Data.Time hiding (parseTime)
 import           Data.Time.Clock.POSIX
+import qualified Data.Text as T
 import           Data.Typeable
 import           Data.Word
 import           Foreign.C.Types
@@ -41,8 +48,12 @@ import           Foreign.Marshal.Utils
 import           Foreign.Ptr
 import qualified Language.C.Inline as C
 import           System.Posix.Env.ByteString
+import           System.Posix.Signals
 import           SWC.Internal hiding (ModifierMask)
 import qualified SWC.Wayland as WL
+import qualified System.IO as IO
+import           System.IO.Unsafe
+import           System.Posix.Signals
 import           Text.XkbCommon
 import           Text.XkbCommon.InternalTypes
 
@@ -59,15 +70,26 @@ C.include "<wayland-server.h>"
 C.include "<xkbcommon/xkbcommon.h>"
 
 {- Types -}
-data FFIException = NullPointerError String [Argument]
+data CSourceLoc = CSourceLoc String [Argument]
+
+data FFIException = NullPointerError CSourceLoc
+                  | FailureResultError CSourceLoc
                   deriving (Typeable, Show)
 
 instance Exception FFIException where
+  displayException e@(NullPointerError loc) = execWriter $ do
+    tell $ show (typeOf e)
+    tell " at "
+    tell $ show loc
+  displayException e@(FailureResultError loc) = execWriter $ do
+    tell $ show (typeOf e)
+    tell " at "
+    tell $ show loc
 
-data SwcException = Unspecified FFIException
-               deriving (Typeable, Show)
-
-instance Exception SwcException where
+instance Show CSourceLoc where
+  showsPrec _ (CSourceLoc func args) = let
+    showArgs = L.foldr (.) id . L.intersperse (showString ", ") . fmap shows;
+    in showString func . showParen True (showArgs args)
 
 data Binding = Binding BindingType Modifier Keysym
              deriving (Eq, Show, Ord)
@@ -75,18 +97,22 @@ data Binding = Binding BindingType Modifier Keysym
 instance Ord Keysym where
   (<=) (Keysym a) (Keysym b) = a <= b
 
-data CallbackEvent = Ready (Ptr WL.Display) (Ptr WL.EventLoop)
-                   | NewScreen (Ptr Screen)
-                   | NewWindow (Ptr Window)
-                   | NewDevice (Ptr InputDevice)
-                   | SessionActive Bool
-                   | InputEvent Binding UTCTime Word32 WL.KeyboardKeyState
+data CallbackEvent = Ready { display :: Ptr WL.Display, eventLoop :: Ptr WL.EventLoop }
+                   | NewScreen { screen :: Ptr Screen }
+                   | NewWindow { window :: Ptr Window }
+                   | NewDevice { inputDevice :: Ptr InputDevice }
+                   | SessionActive { activeState :: Bool }
+                   | InputEvent { binding :: Binding, time :: UTCTime, keyValue :: Word32, keyState :: WL.KeyboardKeyState }
+                   | SignalCaught { signal :: CInt }
+                   | Stop { }
+                   | Catastrophe { exception :: FFIException }
                    deriving (Show)
 
 class Monad m => MonadWl m where
   terminate :: Ptr WL.Display -> m ()
   newDisplay :: m (Ptr WL.Display)
   addSocketAuto :: Ptr WL.Display -> m BS.ByteString
+  eventLoopAddSignal :: Ptr WL.EventLoop -> CInt -> WL.SignalFunc -> m (Ptr WL.EventSource)
   getEventLoop :: Ptr WL.Display -> m (Ptr WL.EventLoop)
   runLoop :: Ptr WL.Display -> m ()
   destroyDisplay :: Ptr WL.Display -> m ()
@@ -99,6 +125,8 @@ class Monad m => MonadWl m where
   addSocketAuto = lift . addSocketAuto
   default getEventLoop :: (MonadTrans t, MonadWl m', m ~ t m') => Ptr WL.Display -> m (Ptr WL.EventLoop)
   getEventLoop = lift . getEventLoop
+  default eventLoopAddSignal :: (MonadTrans t, MonadWl m', m ~ t m') => Ptr WL.EventLoop -> CInt -> WL.SignalFunc -> m (Ptr WL.EventSource)
+  eventLoopAddSignal = ((lift .) .) . eventLoopAddSignal
   default runLoop :: (MonadTrans t, MonadWl m', m ~ t m') => Ptr WL.Display -> m ()
   runLoop = lift . runLoop
   default destroyDisplay :: (MonadTrans t, MonadWl m', m ~ t m') => Ptr WL.Display -> m ()
@@ -117,6 +145,9 @@ instance MonadWl IO where
   getEventLoop display = [C.exp| struct wl_event_loop * {
     wl_display_get_event_loop($(struct wl_display *display))
   } |] >>= ensurePtr "wl_display_get_event_loop" [arg display]
+  eventLoopAddSignal eventLoop signal handler = [C.exp| struct wl_event_source * {
+    wl_event_loop_add_signal($(struct wl_event_loop *eventLoop), $(int signal), $fun:(int (*handler)(int, void *)), NULL)
+  } |] >>= ensurePtr "wl_event_loop_add_signal" [arg eventLoop, arg signal, Argstr "&handler"]
   runLoop display = [C.block| void {
     wl_display_run($(struct wl_display *display));
   } |]
@@ -240,7 +271,9 @@ instance MonadSwc IO where
   } |]
   initialize display manager = [C.exp| bool {
     swc_initialize($(struct wl_display *display), NULL, $(struct swc_manager *manager))
-  } |] >>= (flip unless $ throwIO $ NullPointerError "swc_initialize" [arg display, arg manager]) . toBool
+  } |] >>= (\r -> case toBool r of
+               True -> withLogger . logDebug . T.pack $ "swc_initialize(...) = " ++ show r;
+               False -> throwFailureResult "swc_initialize" [arg display, arg manager])
   finalize = [C.block| void {
     swc_finalize();
   } |]
@@ -251,16 +284,29 @@ data Argument = forall a. Show a => Arg a | Argstr String
 
 instance Show Argument where
   showsPrec p (Arg a) = showsPrec p a
-  showsPrec p (Argstr s) = showsPrec p s
+  showsPrec _ (Argstr s) = showString s
 
 {- Implementation -}
 arg :: Show a => a -> Argument
 arg = Arg
 
+throwNullPointer :: String -> [Argument] -> IO a
+throwNullPointer s a = throwIO . NullPointerError $ CSourceLoc s a
+
+throwFailureResult :: String -> [Argument] -> IO a
+throwFailureResult s a = throwIO . FailureResultError $ CSourceLoc s a
+
 ensurePtr :: String -> [Argument] -> Ptr a -> IO (Ptr a)
 ensurePtr source args ptr
-  | ptr == nullPtr = return ptr
-  | otherwise      = throwIO $ NullPointerError source args
+  | ptr == nullPtr = do
+      withLogger . logError . T.pack . show $ CSourceLoc source args
+      throwNullPointer source args
+  | otherwise      = do
+      withLogger . logDebug . T.pack . execWriter $ do
+        tell . show $ CSourceLoc source args
+        tell " = "
+        tell . show $ ptr
+      return ptr
 
 newScreenCallback :: (CallbackEvent -> IO ()) -> NewScreenCallback
 newScreenCallback write = write . NewScreen
@@ -294,32 +340,44 @@ registerBinding write r@(Binding b m k) = fmap (== 0) $ addBinding b m k handler
     parseState = toEnum . fromEnum
 
     handler :: BindingCallback
-    handler _ t v s = write $ InputEvent r (parseTime t) v (parseState s)
+    handler _ t v s = write $ InputEvent { binding = r, time = parseTime t, keyValue = v, keyState = parseState s }
 
+newSignalCallback :: (CallbackEvent -> IO ()) -> WL.SignalFunc
+newSignalCallback write n _ = write (SignalCaught n) >> pure 0
+
+--start :: (Foldable t) => TChan CallbackEvent -> t Binding -> LoggerT [String] IO ()
 start :: (Foldable t) => TChan CallbackEvent -> t Binding -> IO ()
-start tcOut binds = do
-  let writer = atomically . writeTChan tcOut
+start tcOut binds = let
+    writer = atomically . writeTChan tcOut;
+    onError = Handler $ \(ex :: FFIException) -> writer $ Catastrophe { exception = ex }
+  in
+    flip catches [onError] $ do
+      _ <- installHandler sigUSR1 (Ignore) Nothing -- Prevent RTS misunderstandings
 
-  display <- newDisplay
+      display <- newDisplay
 
-  let nscb = newScreenCallback writer
-  let nwcb = newWindowCallback writer
-  let ndcb = newDeviceCallback writer
-  let sacb = sessionCallback True writer
-  let sdcb = sessionCallback False writer
-  manager <- mkManager nscb nwcb ndcb sacb sdcb
+      let nscb = newScreenCallback writer
+      let nwcb = newWindowCallback writer
+      let ndcb = newDeviceCallback writer
+      let sacb = sessionCallback True writer
+      let sdcb = sessionCallback False writer
+      manager <- mkManager nscb nwcb ndcb sacb sdcb
 
-  socket <- addSocketAuto display
-  setEnv "WAYLAND_DISPLAY" socket True
+      socket <- addSocketAuto display
+      setEnv "WAYLAND_DISPLAY" socket True
+      withLogger . logInfo . T.pack $ "Socket: " ++ show socket
 
-  initialize display manager
+      initialize display manager -- Will clobber USR1 handler
 
-  mapM_ (registerBinding writer) (sortUniq $ toList binds)
+      mapM_ (registerBinding writer) (sortUniq $ toList binds)
 
-  eventLoop <- getEventLoop display
-  writer $ Ready display eventLoop
+      eventLoop <- getEventLoop display
+      let sccb = newSignalCallback writer
+      _ <- eventLoopAddSignal eventLoop sigCHLD sccb
+      writer $ Ready { display, eventLoop }
 
-  runLoop display >> destroyDisplay display
+      runLoop display >> finalize
+      writer $ Stop { }
   where
     mkManager :: NewScreenCallback -> NewWindowCallback -> NewDeviceCallback -> SessionCallback -> SessionCallback -> IO (Ptr Manager)
     mkManager ns nw nd sa sd = do
@@ -329,3 +387,6 @@ start tcOut binds = do
       fnActivate <- $(C.mkFunPtr [t| SessionCallback |]) sa
       fnDeactivate <- $(C.mkFunPtr [t| SessionCallback |]) sd
       new $ Manager { fnNewScreen, fnNewWindow, fnNewDevice, fnActivate, fnDeactivate }
+
+withLogger :: LoggerT Message IO a -> IO a
+withLogger = usingLoggerT . liftLogIO . upgradeMessageAction defaultFieldMap $ cmapM fmtRichMessageDefault logTextStderr

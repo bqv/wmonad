@@ -6,7 +6,13 @@
 {-# LANGUAGE DuplicateRecordFields #-}
 module SWC.Wayland where
 
+import           Foreign.C.Types
+import           Foreign.Ptr
+
+type SignalFunc = CInt -> Ptr () -> IO CInt
+
 data Display
+data EventSource
 data EventLoop
 
 {- Constants -}

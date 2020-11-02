@@ -18,56 +18,113 @@
     };
   };
 
-  outputs = inputs@{ self, rc, ... }: {
+  outputs = inputs@{ self, rc, ... }: let
+    systems = [ "x86_64-linux" "i686-linux" "aarch64-linux" ];
+    forAllSystems = f: inputs.nixpkgs.lib.genAttrs systems (sys: f sys);
+  in {
 
-    packages.x86_64-linux = let
-      pkgs = rc.legacyPackages.x86_64-linux
-          // rc.packages.x86_64-linux;
+    nixosConfigurations = {
+      demo = inputs.nixpkgs.lib.nixosSystem {
+        system = "x86_64-linux";
+        modules = [{
+          environment.systemPackages = [
+            self.packages.x86_64-linux.wmonad
+            rc.legacyPackages.x86_64-linux.sway
+          ];
+
+          hardware.opengl.enable = true;
+
+          users.users.root.password = "toor";
+        }];
+      };
+    };
+
+    packages = forAllSystems (system: let
+      pkgs = rc.legacyPackages.${system} // rc.packages.${system};
+
       haskellPkgs = pkgs.haskellPackages.override {
         overrides = _: super: with pkgs.haskell.lib; {
+          inherit (self.packages.${system}) wmonad;
           xkbcommon = markUnbroken
             (overrideSrc super.xkbcommon { src = inputs.xkbcommon; });
           cpphs = appendPatch super.cpphs ./cpphs.patch;
           co-log = markUnbroken super.co-log;
           typerep-map = markUnbroken super.typerep-map;
+          polysemy-zoo = markUnbroken super.polysemy-zoo;
+          compact = markUnbroken super.compact;
+          co-log-polysemy-formatting = markUnbroken super.co-log-polysemy-formatting;
+          formatting = super.formatting_7_1_1;
         };
       };
+
+      fixWmonad = with pkgs.haskell.lib; p: dontStrip (appendConfigureFlags p [
+        "--ghc-options=-g"
+      ]);
     in rec {
       inherit (pkgs.velox) swc;
-      wmonad = haskellPkgs.callCabal2nix "wmonad" ./. {
+      inherit haskellPkgs;
+      inherit (haskellPkgs) shellFor;
+      wmonad = (fixWmonad (haskellPkgs.callCabal2nix "wmonad" ./. {
         inherit swc;
         input = pkgs.libinput;
-      };
-      ghc = pkgs.ghc.withPackages (_: wmonad.propagatedBuildInputs);
+      }));
+      ghc = haskellPkgs.ghc.withPackages (_: let
+        inherit (rc.legacyPackages.${system}) lib;
+      in lib.flatten (builtins.attrValues wmonad.getBuildInputs));
+      cabal = haskellPkgs.cabal-install;
       cabal-repl = pkgs.writeShellScriptBin "cabal-repl" ''
         export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:${pkgs.lib.makeLibraryPath [
-          rc.legacyPackages.x86_64-linux.wayland
-          rc.legacyPackages.x86_64-linux.libinput
-          rc.legacyPackages.x86_64-linux.libxkbcommon
-          rc.packages.x86_64-linux.velox.swc
+          rc.legacyPackages.${system}.wayland
+          rc.legacyPackages.${system}.libinput
+          rc.legacyPackages.${system}.libxkbcommon
+          rc.packages.${system}.velox.swc
         ]}"
-        ${pkgs.haskellPackages.cabal-install}/bin/cabal repl $@
+        ${haskellPkgs.cabal-install}/bin/cabal repl $@
       '';
-    };
+    });
 
-    defaultPackage.x86_64-linux = self.packages.x86_64-linux.wmonad;
+    defaultPackage = forAllSystems (system: self.packages.${system}.wmonad);
 
-    devShell.x86_64-linux = rc.legacyPackages.x86_64-linux.mkShell {
-      inputsFrom = [
-        self.packages.x86_64-linux.wmonad
+    apps = forAllSystems (system: {
+      demo = with self.nixosConfigurations.demo.config; {
+        type = "app";
+        program = (rc.legacyPackages.${system}.writeShellScript "demo-vm" ''
+          rm -f ${networking.hostName}.qcow2
+          exec ${system.build.vm}/bin/run-${networking.hostName}-vm
+        '').outPath;
+      };
+      local = {
+        type = "app";
+        program = (rc.legacyPackages.${system}.writeShellScript "wmonad-launch" ''
+          exec /run/wrappers/bin/swc-launch -t /dev/tty10 \
+            -- ${self.packages.${system}.wmonad}/bin/wmonad
+        '').outPath;
+      };
+    });
+
+    devShell = forAllSystems (system: self.packages.${system}.shellFor rec {
+      CABAL_CONFIG = with rc.legacyPackages.${system}; writeText "config" ''
+        extra-include-dirs:
+        extra-lib-dirs: ${lib.concatMapStringsSep " " (p: "${lib.getLib p}/lib") [
+          wayland libinput libxkbcommon swc ]}
+      '';
+      packages = hs: with hs; [
+        wmonad
       ];
+      inherit (rc.legacyPackages.${system}) wayland;
+      inherit (rc.legacyPackages.${system}) libinput;
+      inherit (rc.legacyPackages.${system}) libxkbcommon;
+      inherit (rc.packages.${system}.velox) swc;
       buildInputs = [
-        rc.legacyPackages.x86_64-linux.wayland
-        rc.legacyPackages.x86_64-linux.libinput
-        rc.legacyPackages.x86_64-linux.libxkbcommon
-        rc.packages.x86_64-linux.velox.swc
+        wayland libinput libxkbcommon swc
+
+        self.packages.${system}.ghc
+        self.packages.${system}.cabal
+        self.packages.${system}.cabal-repl
+        rc.legacyPackages.${system}.cabal2nix
+        self.packages.${system}.haskellPkgs.hoogle
       ];
-      nativeBuildInputs = [
-        self.packages.x86_64-linux.ghc
-        self.packages.x86_64-linux.cabal-repl
-        rc.legacyPackages.x86_64-linux.cabal2nix
-      ];
-    };
+    });
 
   };
 }
