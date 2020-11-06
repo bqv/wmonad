@@ -1,10 +1,9 @@
 {-# LANGUAGE TypeApplications #-}
 
+import           Protolude
 import           Colog.Polysemy.Formatting
-import           Data.Function
 import           Polysemy
-import           System.IO
-import qualified WMonad
+import qualified WMonad.Core as WM
 
 main :: HasCallStack => IO Int
 main = do
@@ -13,6 +12,6 @@ main = do
   let logMessageStdout = logTextStdout & cmap (renderThreadTimeMessage logEnv)
   let logToIO = runLogAction @IO logMessageStdout . addThreadAndTimeToLog
 
-  runFinal . embedToFinal . logToIO . setLogLevel Debug $ WMonad.runCompositor
+  runFinal . embedToFinal . logToIO . setLogLevel Debug $ WM.runCompositor
 
   return 0

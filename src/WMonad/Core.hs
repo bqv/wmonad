@@ -8,45 +8,24 @@
 {-# LANGUAGE DataKinds #-}
 {-# LANGUAGE NamedFieldPuns #-}
 {-# LANGUAGE RankNTypes #-}
-module WMonad (
+module WMonad.Core (
   runCompositor
 ) where
 
-import           Prelude hiding (log)
+import           Protolude hiding ((%))
 import           Colog.Polysemy.Formatting
-import           Control.Concurrent
 import           Control.Concurrent.STM
-import           Control.Concurrent.STM.TChan
-import           Control.Comonad.Store
 import           Control.Comonad.Store.Zipper
-import           Control.Comonad.Store.Zipper.Circular
-import           Control.Exception
-import           Control.Monad
-import           Control.Monad.Trans.Reader
-import           Control.Monad.Trans.State
 import           Control.Monad.Trans.Writer
-import qualified Control.Monad.Morph as MM
 import qualified Data.ByteString as BS
-import           Data.Either
-import           Data.Function
 import           Data.Functor
 import qualified Data.IntMap as IM
-import           Data.IORef
-import           Data.String
 import qualified Data.Text as T
 import           Data.Time.Clock
 import           Control.Lens
 import qualified Data.Map as M
-import           Data.Word
 import           Formatting
-import           Formatting.Formatters
-import           Foreign.C.Types
-import           Foreign.Marshal.Utils
-import           Foreign.Ptr
-import qualified Language.C.Inline as C
-import qualified Language.C.Inline.Context as C
-import qualified Language.C.Inline.Unsafe as CU
-import qualified Language.C.Types as C
+import qualified Graphics.Wayland.Server as WL
 import qualified Polysemy as P
 import qualified Polysemy.Writer as P
 import qualified Polysemy.Reader as P
@@ -55,10 +34,9 @@ import qualified Polysemy.Embed as P
 import qualified Polysemy.Final as P
 import qualified Polysemy.Error as P
 import qualified Polysemy.State as P
-import qualified SWC
-import qualified SWC.Wayland as WL
 import qualified Text.XkbCommon as XKB
 import qualified Text.XkbCommon.KeysymList as XKB
+import qualified WMonad.SWC as SWC
 
 {- Types -}
 type ZipperMap a = Maybe (Zipper (IM.IntMap) (Maybe a))
@@ -225,15 +203,13 @@ spawn p_data time value state
 -}
 
 handleInput :: (WithLog r, P.Members '[P.Reader Core, P.Embed IO] r)
-            => SWC.Binding -> UTCTime -> Word32 -> WL.KeyboardKeyState -> P.Sem r ()
+            => SWC.Binding -> UTCTime -> XKB.Keysym -> WL.KeyboardKeyState -> P.Sem r ()
 handleInput (SWC.Binding SWC.BindingKey SWC.ModifierLogo keysym_q) time keyValue keyState
   | keyState == WL.KeyboardKeyStatePressed = do
-      askWlDisplay >>= void . spawnFFI . SWC.terminate
+      askWlDisplay >>= void . spawnFFI . SWC.withCall . WL.terminateDisplay
 handleInput _ _ _ _ = pure ()
 
---type WM = ExceptT String (ReaderT Bindings (StateT Core IO))
-
-bindings :: (SWC.MonadSwc cb, SWC.MonadWl cb) => Writer (M.Map SWC.Binding (cb ())) ()
+bindings :: Writer (M.Map SWC.Binding (cb ())) ()
 bindings = do
 --tell ((SWC.Binding SWC.BindingKey SWC.ModifierLogo XKB.keysym_Return), (spawn, Just "st-wl"))
 --tell ((SWC.Binding SWC.BindingKey SWC.ModifierLogo XKB.keysym_r), (spawn, Just "dmenu_run-wl"))
@@ -251,7 +227,7 @@ loopDispatch = do
     SWC.Catastrophe { SWC.exception } -> do
       logError ("Error: " % string) $ displayException exception
       logDebug "Exiting due to previous error"
-      askWlDisplay >>= void . spawnFFI . SWC.terminate
+      askWlDisplay >>= void . spawnFFI . SWC.withCall . WL.terminateDisplay
     SWC.Ready _ _ -> undefined
     SWC.InputEvent { SWC.binding, SWC.time, SWC.keyValue, SWC.keyState } -> do
       handleInput binding time keyValue keyState >> loopDispatch
@@ -297,7 +273,7 @@ runCompositor = do
   let withEventStream = P.runInputSem (P.embed $ readTChan chan)
 
   stmToIO . withEventStream $ do
-    P.runError . flip (P.catch @SWC.FFIException) (const . forever $ P.input) $ do
+    _ <- P.runError . flip (P.catch @SWC.FFIException) (const . forever $ P.input) $ do
       (events, core) <- P.runWriter . P.runReader tid $ fix waitReady
       mapM_ (P.embed . unGetTChan chan) $ reverse events
       P.runReader core $ loopDispatch

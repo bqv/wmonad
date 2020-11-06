@@ -1,5 +1,6 @@
 module Control.Comonad.Store.Zipper.Circular where
 
+import           Protolude
 import           Control.Comonad.Store.Zipper
 import           Control.Comonad.Store
 

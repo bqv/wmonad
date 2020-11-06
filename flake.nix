@@ -54,33 +54,28 @@
           compact = markUnbroken super.compact;
           co-log-polysemy-formatting = markUnbroken super.co-log-polysemy-formatting;
           formatting = super.formatting_7_1_1;
+          protolude = super.protolude_0_3_0;
         };
       };
 
-      fixWmonad = with pkgs.haskell.lib; p: dontStrip (appendConfigureFlags p [
-        "--ghc-options=-g"
-      ]);
+      fixWmonad = with pkgs.haskell.lib; p: dontStrip
+        (disableHardening (addBuildTools (addPkgconfigDepend
+          (appendConfigureFlags p [ "--ghc-options=-g" ])
+        pkgs.libinput) [ haskellPkgs.c2hs ]) [ "bindnow" ])
+      ;
     in rec {
       inherit (pkgs.velox) swc;
       inherit haskellPkgs;
       inherit (haskellPkgs) shellFor;
       wmonad = (fixWmonad (haskellPkgs.callCabal2nix "wmonad" ./. {
         inherit swc;
-        input = pkgs.libinput;
       }));
-      ghc = haskellPkgs.ghc.withPackages (_: let
+      ghc = haskellPkgs.ghc.withPackages (hs: let
         inherit (rc.legacyPackages.${system}) lib;
-      in lib.flatten (builtins.attrValues wmonad.getBuildInputs));
+      in lib.flatten (builtins.attrValues wmonad.getBuildInputs) ++ [
+        hs.c2hs
+      ]);
       cabal = haskellPkgs.cabal-install;
-      cabal-repl = pkgs.writeShellScriptBin "cabal-repl" ''
-        export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:${pkgs.lib.makeLibraryPath [
-          rc.legacyPackages.${system}.wayland
-          rc.legacyPackages.${system}.libinput
-          rc.legacyPackages.${system}.libxkbcommon
-          rc.packages.${system}.velox.swc
-        ]}"
-        ${haskellPkgs.cabal-install}/bin/cabal repl $@
-      '';
     });
 
     defaultPackage = forAllSystems (system: self.packages.${system}.wmonad);
@@ -102,26 +97,33 @@
       };
     });
 
-    devShell = forAllSystems (system: self.packages.${system}.shellFor rec {
+    devShell = forAllSystems (system: rc.legacyPackages.${system}.mkShell rec {
       CABAL_CONFIG = with rc.legacyPackages.${system}; writeText "config" ''
         extra-include-dirs:
         extra-lib-dirs: ${lib.concatMapStringsSep " " (p: "${lib.getLib p}/lib") [
-          wayland libinput libxkbcommon swc ]}
+          wayland libinput libinput.dev libxkbcommon swc ]}
+        program-locations
+          c2hs-location: ${self.packages.${system}.haskellPkgs.c2hs}/bin/c2hs
+        program-default-options
+          ghc-options: -L${lib.getLib libinput}/lib -linput
       '';
-      packages = hs: with hs; [
-        wmonad
-      ];
       inherit (rc.legacyPackages.${system}) wayland;
       inherit (rc.legacyPackages.${system}) libinput;
       inherit (rc.legacyPackages.${system}) libxkbcommon;
       inherit (rc.packages.${system}.velox) swc;
       buildInputs = [
-        wayland libinput libxkbcommon swc
+        wayland libinput libinput.dev libxkbcommon swc
 
+        rc.legacyPackages.${system}.cabal2nix
+        rc.legacyPackages.${system}.pkg-config
+      ];
+      propagatedBuildInputs = [
         self.packages.${system}.ghc
         self.packages.${system}.cabal
-        self.packages.${system}.cabal-repl
-        rc.legacyPackages.${system}.cabal2nix
+      ];
+      nativeBuildInputs = [
+        self.packages.${system}.haskellPkgs.c2hs
+        self.packages.${system}.haskellPkgs.xkbcommon
         self.packages.${system}.haskellPkgs.hoogle
       ];
     });

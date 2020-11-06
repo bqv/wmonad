@@ -1,59 +1,71 @@
-name:                wmonad
-version:             0.1.0.0
-license:             MPL-2.0
-license-file:        LICENSE
-author:              Tony Olagbaiye
-maintainer:          wmonad@fron.io
-copyright:           (c) 2020 The Human Race
-build-type:          Simple
-cabal-version:       >=1.10
+cabal-version:         2.2
+name:                  wmonad
+version:               0.1.0.0
+license:               MPL-2.0
+license-file:          LICENSE
+author:                Tony Olagbaiye
+maintainer:            wmonad@fron.io
+copyright:             (c) 2020 The Human Race
+build-type:            Simple
+tested-with:           GHC == 8.8.4
+
+common basic
 
 executable wmonad
   main-is:             Main.hs
   hs-source-dirs:      src
-  other-modules:       WMonad
-                     , SWC
-                     , SWC.Internal
-                     , SWC.Wayland
-                     , Control.Comonad.Store.Zipper.Circular
+  other-modules:       Control.Comonad.Store.Zipper.Circular
+                     , Data.Enum.Util
+                     , Foreign.Callable
+                     , Foreign.Callback
+                     , Foreign.Ptr.Total
+                     , Graphics.Wayland.Server
+                     , Graphics.Wayland.Server.Display
+                     , Graphics.Wayland.Server.Events
+                     , Graphics.Wayland.Server.Protocol
+                     , Graphics.Wayland.SWC
+                     , Graphics.Wayland.SWC.Colour
+                     , Graphics.Wayland.SWC.Types
+                     , System.InputDevice
+                     , WMonad.Core
+                     , WMonad.SWC
   build-depends:       base >=4 && <5
+                     , binary
                      , bytestring
+                     , classy-prelude
                      , co-log
                      , co-log-core
                      , co-log-polysemy
                      , co-log-polysemy-formatting
+                     , colour
                      , comonad
                      , comonad-extras
                      , containers
+                     , data-flags
                      , formatting
                      , hint
-                     , inline-c
                      , lens
+                     , memory
                      , mmorph
                      , polysemy
                      , polysemy-plugin
                      , polysemy-zoo
+                     , protolude
                      , stm
-                     , text
                      , template-haskell
+                     , text
+                     , text-show
                      , time
                      , transformers
                      , Unique
                      , unix
                      , xkbcommon
+  build-tool-depends:  c2hs:c2hs
   default-language:    Haskell2010
 
-  extra-libraries:     wayland-server input xkbcommon swc
+  pkgconfig-depends:   libinput
+  extra-libraries:     wayland-server xkbcommon swc
+  extra-lib-dirs:
   cc-options:          -O2 -Wall
   ghc-options:         -O2 -Wall -g -threaded -flate-specialise -fspecialise-aggressively -fplugin=Polysemy.Plugin
-  default-extensions:
-   -- DataKinds
-   -- FlexibleContexts
-   -- GADTs
-   -- LambdaCase
-   -- PolyKinds
-   -- RankNTypes
-   -- ScopedTypeVariables
-   -- TypeApplications
-   -- TypeOperators
-   -- TypeFamilies
+  default-extensions:  NoImplicitPrelude
