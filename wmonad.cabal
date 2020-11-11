@@ -14,8 +14,7 @@ common basic
 executable wmonad
   main-is:             Main.hs
   hs-source-dirs:      src
-  other-modules:       Control.Comonad.Store.Zipper.Circular
-                     , Data.Enum.Util
+  other-modules:       Data.Enum.Util
                      , Foreign.Callable
                      , Foreign.Callback
                      , Foreign.Ptr.Total
@@ -29,6 +28,11 @@ executable wmonad
                      , System.InputDevice
                      , WMonad.Core
                      , WMonad.SWC
+                     , WMonad.Types
+                     , WMonad.Types.Internal
+                     , WMonad.Events
+                     , WMonad.Events.InputEvent
+                     , WMonad.Events.NewWindow
   build-depends:       base >=4 && <5
                      , binary
                      , bytestring
@@ -41,13 +45,17 @@ executable wmonad
                      , comonad
                      , comonad-extras
                      , containers
+                     , data-default
                      , data-flags
+                     , extra
                      , formatting
                      , hint
                      , lens
                      , memory
                      , mmorph
+                     , optics
                      , polysemy
+                     , polysemy-optics
                      , polysemy-plugin
                      , polysemy-zoo
                      , protolude

@@ -4,7 +4,6 @@ import           Prelude
 import           Control.Monad.Trans.State
 import           Data.Enum.Util
 import qualified Data.Map as Map
-import           Data.Ratio ((%))
 import           Data.Time.Clock (DiffTime)
 import           Data.Fixed (Fixed(..), HasResolution(..), Milli(..))
 import qualified Data.Text as T
@@ -54,8 +53,9 @@ windowHide' w = windowHide'' w
   { castPtr `Ptr Window' } -> `()' #}
 
 windowFocus = traceC1 "swc_window_focus" windowFocus'
-windowFocus' :: Ptr Window -> IO ()
-windowFocus' w = windowFocus'' w
+windowFocus' :: Maybe (Ptr Window) -> IO ()
+windowFocus' (Just w) = windowFocus'' w
+windowFocus' Nothing = windowFocus'' nullPtr
 {#fun swc_window_focus as windowFocus''
   { castPtr `Ptr Window' } -> `()' #}
 

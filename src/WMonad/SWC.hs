@@ -5,6 +5,7 @@
 {-# LANGUAGE ExistentialQuantification #-}
 {-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE DuplicateRecordFields #-}
 module WMonad.SWC (
   Screen(..),
   Window(..),
@@ -14,6 +15,7 @@ module WMonad.SWC (
   Keysym(..),
   CallbackEvent(..),
   FFIException(..),
+  new, with,
   withCall,
   start
 ) where
@@ -83,16 +85,37 @@ data CallbackEvent = Ready { display :: Ptr WL.Display, eventLoop :: Ptr WL.Even
                    | NewDevice { inputDevice :: InputDevice }
                    | SessionActive { activeState :: Bool }
                    | InputEvent { binding :: Binding, time :: UTCTime, keyValue :: Keysym, keyState :: WL.KeyboardKeyState }
+                   | ScreenEvent { screen :: Ptr Screen, screenEvent :: ScreenCallbackEvent }
+                   | WindowEvent { window :: Ptr Window, windowEvent :: WindowCallbackEvent }
                    | SignalCaught { signal :: Signal }
                    | Stop { }
                    | Catastrophe { exception :: FFIException }
                    deriving (Show)
 
-newScreenCallback :: (CallbackEvent -> IO ()) -> NewScreenCallback
-newScreenCallback write = write . NewScreen
+data ScreenCallbackEvent = ScreenDestroy
+                         | GeometryChanged
+                         | UsableGeometryChanged
+                         | ScreenEntered
+                         deriving (Show)
 
-newWindowCallback :: (CallbackEvent -> IO ()) -> NewWindowCallback
-newWindowCallback write = write . NewWindow
+data WindowCallbackEvent = WindowDestroy
+                         | TitleChanged
+                         | AppIdChanged
+                         | ParentChanged
+                         | WindowEntered
+                         | WindowMove
+                         | WindowResize
+                         deriving (Show)
+
+newScreenCallback :: Ptr ScreenHandler -> (CallbackEvent -> IO ()) -> NewScreenCallback
+newScreenCallback handler write screen = do
+  withCall $ screenSetHandler screen handler
+  write $ NewScreen screen
+
+newWindowCallback :: Ptr WindowHandler -> (CallbackEvent -> IO ()) -> NewWindowCallback
+newWindowCallback handler write window = do
+  withCall $ windowSetHandler window handler
+  write $ NewWindow window
 
 newDeviceCallback :: (CallbackEvent -> IO ()) -> NewDeviceCallback
 newDeviceCallback write = write . NewDevice
@@ -109,6 +132,12 @@ registerBinding write r@(Binding b m k) = fmap (== 0) . withCall $ addBinding b 
 newSignalCallback :: (CallbackEvent -> IO ()) -> WL.EventLoopSignalCallback
 newSignalCallback write n = write (SignalCaught n) >> pure WL.EventSourceDone
 
+screenEventCallback :: ScreenCallbackEvent -> (CallbackEvent -> IO ()) -> DataCallback Screen
+screenEventCallback screenEvent write screen = write $ ScreenEvent { screen, screenEvent }
+
+windowEventCallback :: WindowCallbackEvent -> (CallbackEvent -> IO ()) -> DataCallback Window
+windowEventCallback windowEvent write window = write $ WindowEvent { window, windowEvent }
+
 start :: (Foldable t) => TChan CallbackEvent -> t Binding -> IO ()
 start tcOut binds = let
     writer = atomically . writeTChan tcOut;
@@ -119,12 +148,9 @@ start tcOut binds = let
 
       display <- withMaybeCall $ WL.createDisplay
 
-      let nscb = newScreenCallback writer
-      let nwcb = newWindowCallback writer
-      let ndcb = newDeviceCallback writer
-      let sacb = sessionCallback True writer
-      let sdcb = sessionCallback False writer
-      manager <- mkManager nscb nwcb ndcb sacb sdcb
+      screenHandler <- mkScreenHandler writer
+      windowHandler <- mkWindowHandler writer
+      manager <- mkManager screenHandler windowHandler writer
 
       socket <- withMaybeCall $ WL.addDisplaySocketAuto display
       setEnv "WAYLAND_DISPLAY" (BS.pack socket) True
@@ -143,16 +169,40 @@ start tcOut binds = let
       withCall $ finalize
       writer $ Stop { }
   where
-    mkManager :: NewScreenCallback -> NewWindowCallback -> NewDeviceCallback -> SessionCallback -> SessionCallback -> IO (Ptr Manager)
-    mkManager fnNewScreen fnNewWindow fnNewDevice fnActivate fnDeactivate = do
+    mkManager :: Ptr ScreenHandler -> Ptr WindowHandler -> (CallbackEvent -> IO ()) -> IO (Ptr Manager)
+    mkManager screenHandler windowHandler writer = do
+      let fnNewScreen = newScreenCallback screenHandler writer
+      let fnNewWindow = newWindowCallback windowHandler writer
+      let fnNewDevice = newDeviceCallback writer
+      let fnActivate = sessionCallback True writer
+      let fnDeactivate = sessionCallback False writer
       new $ Manager { fnNewScreen, fnNewWindow, fnNewDevice, fnActivate, fnDeactivate }
+
+    mkScreenHandler :: (CallbackEvent -> IO ()) -> IO (Ptr ScreenHandler)
+    mkScreenHandler writer = do
+      let fnScreenDestroy = screenEventCallback ScreenDestroy writer
+      let fnGeometryChanged = screenEventCallback GeometryChanged writer
+      let fnUsableGeometryChanged = screenEventCallback UsableGeometryChanged writer
+      let fnScreenEntered = screenEventCallback ScreenEntered writer
+      new $ ScreenHandler { fnScreenDestroy, fnGeometryChanged, fnUsableGeometryChanged, fnScreenEntered }
+
+    mkWindowHandler :: (CallbackEvent -> IO ()) -> IO (Ptr WindowHandler)
+    mkWindowHandler writer = do
+      let fnWindowDestroy = windowEventCallback WindowDestroy writer
+      let fnTitleChanged = windowEventCallback TitleChanged writer
+      let fnAppIdChanged = windowEventCallback AppIdChanged writer
+      let fnParentChanged = windowEventCallback ParentChanged writer
+      let fnWindowEntered = windowEventCallback WindowEntered writer
+      let fnWindowMove = windowEventCallback WindowMove writer
+      let fnWindowResize = windowEventCallback WindowResize writer
+      new $ WindowHandler { fnWindowDestroy, fnTitleChanged, fnAppIdChanged, fnParentChanged, fnWindowEntered, fnWindowMove, fnWindowResize }
 
 withMaybeCall :: HasCallStack => WriterT [Call] IO (Maybe b) -> IO b
 withMaybeCall w = withFrozenCallStack $ do
   (r, ls) <- runWriterT w
   case r of
     Just x -> mapM_ (withLogger . logDebug . showCall) ls >> pure x
-    Nothing -> fail . mconcat $ fmap (T.unpack . showCall) ls
+    Nothing -> mapM_ (fail . T.unpack . showCall) ls >> pure (panic mempty)
 
 withCall :: HasCallStack => WriterT [Call] IO b -> IO b
 withCall w = withFrozenCallStack $ do

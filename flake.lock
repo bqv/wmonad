@@ -549,10 +549,10 @@
         "nixpkgs": "nixpkgs_6"
       },
       "locked": {
-        "lastModified": 1603816709,
-        "narHash": "sha256-47lhGCmvcS7pdsz8zGy2Am06VGAZ8y3DdVXFnVjmeQ8=",
-        "path": "/nix/store/2wp2czzk3s1d7hr36p28d7nyxw0i0nbg-source",
-        "rev": "02a1facbdc89c5041ba55387645484ad785cba7a",
+        "lastModified": 1604567911,
+        "narHash": "sha256-i4KPJvKhCn6fndh/1NominnKqIZvy0EYHJM8GEEdic4=",
+        "path": "/nix/store/g08zl1qrj3735d93zgm94gfypqrk72rd-source",
+        "rev": "387f824cab50682e373ade49dcec4e6f99c10a42",
         "type": "path"
       },
       "original": {

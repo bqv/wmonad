@@ -1,0 +1,17 @@
+:set prompt "λ> "
+:set -XFlexibleContexts
+:set -XAllowAmbiguousTypes
+:set -XScopedTypeVariables
+:set -XRankNTypes
+:def pf \str -> return $ ":! pointfree \"" ++ str ++ "\""
+import Prelude as P
+import Control.Comonad as Comonad
+import Control.Comonad.Store as Store
+import Control.Lens as Lens
+import Control.Monad as Monad
+import Control.Applicative as App
+import Data.Tuple.Extra
+import qualified Data.Map as M
+import qualified Data.IntMap as IM
+stor' = M.fromList [('a',"b"),('c',"d")]
+(ctx, nonc) = liftA2 (,) ($ stor') ($ M.empty) $ Context (sequence . liftM2 (liftA2 (,)) const M.lookup 'a')

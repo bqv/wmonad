@@ -50,6 +50,7 @@
           cpphs = appendPatch super.cpphs ./cpphs.patch;
           co-log = markUnbroken super.co-log;
           typerep-map = markUnbroken super.typerep-map;
+          polysemy-optics = markUnbroken super.polysemy-optics;
           polysemy-zoo = markUnbroken super.polysemy-zoo;
           compact = markUnbroken super.compact;
           co-log-polysemy-formatting = markUnbroken super.co-log-polysemy-formatting;
